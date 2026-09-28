@@ -94,9 +94,32 @@
   }
 
   const REST_BASE = () => `https://${CONFIG.ENV_ID}.api.tcloudbasegateway.com/v1/rdb/rest`;
+  const FETCH_TIMEOUT_MS = 15000;   // 单次 REST 请求超时，防止网络挂起时界面无限等待
+
+  // 向 SDK 取一次当前会话（必要时会自动刷新令牌）
+  async function refreshAccessToken() {
+    try {
+      if (auth && typeof auth.getSession === 'function') {
+        const res = await auth.getSession();
+        const ses = res && res.data && res.data.session;
+        if (ses && ses.access_token) {
+          accessToken = ses.access_token;
+          return accessToken;
+        }
+      }
+    } catch (e) { /* 保留旧令牌，交由请求结果处理 */ }
+    return accessToken;
+  }
+
+  function fetchWithTimeout(url, options, ms) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { ...options, signal: ctrl.signal })
+      .finally(() => clearTimeout(timer));
+  }
 
   async function restFetch(path, options = {}) {
-    const res = await fetch(REST_BASE() + path, {
+    const buildOpts = () => ({
       ...options,
       headers: {
         'Content-Type': 'application/json',
@@ -104,6 +127,31 @@
         ...(options.headers || {}),
       },
     });
+
+    let res;
+    try {
+      res = await fetchWithTimeout(REST_BASE() + path, buildOpts(), FETCH_TIMEOUT_MS);
+    } catch (e) {
+      const err = new Error(e && e.name === 'AbortError'
+        ? '云端请求超时，请检查网络后重试'
+        : '网络请求失败：' + ((e && e.message) || '未知错误'));
+      throw err;
+    }
+
+    // 令牌过期：刷新一次后重试同一请求
+    if (res.status === 401 && auth) {
+      const fresh = await refreshAccessToken();
+      if (fresh) {
+        try {
+          res = await fetchWithTimeout(REST_BASE() + path, buildOpts(), FETCH_TIMEOUT_MS);
+        } catch (e) {
+          throw new Error(e && e.name === 'AbortError'
+            ? '云端请求超时，请检查网络后重试'
+            : '网络请求失败：' + ((e && e.message) || '未知错误'));
+        }
+      }
+    }
+
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try {
@@ -1124,6 +1172,20 @@
     }
   }
 
+  // 云端拉取：网络偶发挂起时短间隔重试，避免首屏一直停在加载页
+  async function cloudFetchAllWithRetry(tries = 2) {
+    let lastErr = null;
+    for (let i = 0; i < tries; i++) {
+      try {
+        if (i > 0) await new Promise(r => setTimeout(r, 800));
+        return await cloudFetchAll();
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
   async function bootstrap(session) {
     if (state.booting) return;
     state.booting = true;
@@ -1131,10 +1193,31 @@
     setSync('connecting');
     showGate('loading');
 
-    let items;
-    try {
-      items = await cloudFetchAll();
-    } catch (err) {
+    // 启动前先确保令牌可用（长期未打开的标签令牌可能已过期）
+    await refreshAccessToken();
+
+    let settled = false;
+    let watchdog = null;
+
+    const settleOnline = items => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      state.items = items;
+      cacheItems();
+      state.ready = true;
+      state.booting = false;
+      renderUser(session.user);
+      hideGate();
+      renderAll();
+      subscribeRealtime();
+      startCrossTabSync();
+    };
+
+    const settleOffline = err => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
       state.booting = false;
       setSync('offline');
       // 加载失败时允许用本地缓存只读查看，避免完全白屏
@@ -1147,10 +1230,28 @@
         toast('云端连接失败，当前显示本机缓存（只读参考）：' + friendlyErr(err), 'err');
       } else {
         showGate('form');
-        showAuthError('无法加载云端数据：' + friendlyErr(err));
+        showAuthError('无法加载云端数据：' + friendlyErr(err) + '（可重新登录或稍后重试）');
       }
+    };
+
+    // 兜底看门狗：无论何种原因，加载遮罩都不应永久停留
+    watchdog = setTimeout(async () => {
+      if (state.ready || settled) return;
+      try {
+        settleOnline(await cloudFetchAll());
+      } catch (err) {
+        settleOffline(err);
+      }
+    }, 20000);
+
+    let items;
+    try {
+      items = await cloudFetchAllWithRetry(2);
+    } catch (err) {
+      settleOffline(err);
       return;
     }
+    if (settled) return;
 
     // 首次进入：云端为空且本机存在旧版数据 → 询问是否迁移（空数据绝不上传）
     if (!localStorage.getItem(MIGRATE_KEY)) {
@@ -1179,15 +1280,7 @@
       }
     }
 
-    state.items = items;
-    cacheItems();
-    state.ready = true;
-    state.booting = false;
-    renderUser(session.user);
-    hideGate();
-    renderAll();
-    subscribeRealtime();
-    startCrossTabSync();
+    settleOnline(items);
   }
 
   /* ── 云端变更同步：Realtime 优先，失败自动降级为定时刷新 ── */
@@ -1366,6 +1459,8 @@
         handleSignOut();
       } else if (event === 'INITIAL_SESSION') {
         accessToken = session ? (session.access_token || null) : null;
+        // 已完成启动后忽略 SDK 可能重复抛出的初始事件，避免闪回加载页
+        if (state.ready) return;
         if (session) bootstrap(session);
         else showGate('form');
       } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
