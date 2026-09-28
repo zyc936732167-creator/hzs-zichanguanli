@@ -1,12 +1,14 @@
 /* ═══════════════════════════════════════════════════════════
    HZS ASSET LEDGER — 应用逻辑
-   纯原生 JS · 数据保存在 localStorage
+   腾讯云开发 CloudBase（PostgreSQL 模式）云端存储 · 登录鉴权 · 实时同步
    ═══════════════════════════════════════════════════════════ */
 
 (() => {
   'use strict';
 
-  const LS_KEY = 'hzs-assets-v1';
+  const LEGACY_LS_KEY = 'hzs-assets-v1';   // 旧版本地数据（仅用于首次迁移）
+  const CACHE_KEY = 'hzs-cloud-cache-v1';  // 云端数据本地缓存
+  const MIGRATE_KEY = 'hzs-cloud-migrated-v1';
   const DAY = 86400000;
 
   /* ── 枚举 ─────────────────────────────────────── */
@@ -44,53 +46,13 @@
     ],
   };
 
-  /* ── 示例数据（首次打开时写入） ────────────────── */
-  const SEED = [
-    { id: uid(), type: 'physical', code: 'P-001', name: 'Sony A7M4 相机机身', category: '拍摄设备',
-      purchaseDate: '2023-05-12', location: '摄影棚 A · 防潮柜 1', owner: '林越',
-      status: 'in_use', note: '配两块原厂电池', createdAt: Date.now() - 90 * DAY },
-    { id: uid(), type: 'physical', code: 'P-002', name: '大疆 RS 3 Pro 稳定器', category: '拍摄设备',
-      purchaseDate: '2023-08-02', location: '摄影棚 A · 器材架 B2', owner: '林越',
-      status: 'in_use', note: '', createdAt: Date.now() - 80 * DAY },
-    { id: uid(), type: 'physical', code: 'P-003', name: 'Apple Studio Display 27"', category: '办公设备',
-      purchaseDate: '2024-01-15', location: '剪辑工位 03', owner: '沈澈',
-      status: 'in_use', note: '纳米纹理玻璃版', createdAt: Date.now() - 70 * DAY },
-    { id: uid(), type: 'physical', code: 'P-004', name: '爱图仕 LS 600d Pro 影视灯', category: '灯光设备',
-      purchaseDate: '2023-11-20', location: '摄影棚 B · 灯架区', owner: '周屿',
-      status: 'idle', note: '含柔光箱', createdAt: Date.now() - 60 * DAY },
-    { id: uid(), type: 'physical', code: 'P-005', name: '群晖 DS923+ NAS 存储', category: 'IT/网络设备',
-      purchaseDate: '2023-03-08', location: '机房机柜 U12', owner: '沈澈',
-      status: 'in_use', note: '4×8TB 希捷酷狼', createdAt: Date.now() - 55 * DAY },
-    { id: uid(), type: 'physical', code: 'P-006', name: 'Herman Miller Aeron 人体工学椅', category: '家具家私',
-      purchaseDate: '2022-09-01', location: '主会议室', owner: '行政',
-      status: 'repair', note: '扶手松动待修', createdAt: Date.now() - 40 * DAY },
-
-    { id: uid(), type: 'virtual', platform: 'Adobe Creative Cloud', url: 'https://creative.adobe.com',
-      account: 'studio@hzs.studio', password: 'Acr0bat!Hzs#2026', contact: '林越 · 138****6621',
-      expireDate: '2026-10-18', status: 'in_use', note: '团队版 5 席位', createdAt: Date.now() - 50 * DAY },
-    { id: uid(), type: 'virtual', platform: '阿里云控制台', url: 'https://signin.aliyun.com',
-      account: 'hzs-studio', password: 'Cl0ud$Ali#92kQ', contact: 'admin@hzs.studio',
-      expireDate: '', status: 'in_use', note: '主账号已开启 MFA', createdAt: Date.now() - 45 * DAY },
-    { id: uid(), type: 'virtual', platform: 'GitHub Organization', url: 'https://github.com/login',
-      account: 'hzs-studio', password: '0ct0cat!Push#77', contact: '沈澈',
-      expireDate: '', status: 'in_use', note: '组织名 hzs-workshop', createdAt: Date.now() - 35 * DAY },
-    { id: uid(), type: 'virtual', platform: '微信公众平台', url: 'https://mp.weixin.qq.com',
-      account: 'HZS 工作室', password: 'WxMp!Hzs2024#', contact: '周屿 · 运营号',
-      expireDate: '', status: 'in_use', note: '需管理员扫码二次验证', createdAt: Date.now() - 28 * DAY },
-    { id: uid(), type: 'virtual', platform: 'hzs.studio 域名', url: 'https://wanwang.aliyun.com',
-      account: 'hzs@hzs.studio', password: 'D0main#Renew@09', contact: '阿里云 · 沈澈',
-      expireDate: '2026-10-02', status: 'in_use', note: '开启了自动续费，留意扣款', createdAt: Date.now() - 20 * DAY },
-    { id: uid(), type: 'virtual', platform: 'Figma Professional', url: 'https://www.figma.com/login',
-      account: 'design@hzs.studio', password: 'F1gma*Design#z9', contact: '设计组共用',
-      expireDate: '2027-02-14', status: 'in_use', note: '年度订阅', createdAt: Date.now() - 12 * DAY },
-    { id: uid(), type: 'virtual', platform: '旧版 4K 素材库会员', url: 'https://example-stock.com',
-      account: 'hzsvip01', password: 'OldStock#2023', contact: '',
-      expireDate: '2026-08-30', status: 'expired', note: '已停用，考虑是否续费', createdAt: Date.now() - 8 * DAY },
-  ];
-
   /* ── 状态 ─────────────────────────────────────── */
   const state = {
-    items: load(),
+    items: [],
+    ready: false,            // 云端首次加载完成
+    booting: false,
+    session: null,
+    sync: 'connecting',      // connecting | online | offline
     view: 'dashboard',
     keyword: '',
     statusFilter: 'all',
@@ -99,6 +61,16 @@
     showAllPasswords: false,
     revealed: new Set(),
   };
+
+  let app = null;            // CloudBase 应用实例
+  let auth = null;           // CloudBase 认证实例
+  let accessToken = null;    // 当前登录用户 JWT（PostgREST 请求用）
+  let liveChannel = null;    // 实时订阅频道
+  let pollTimer = null;      // Realtime 不可用时的定时刷新兜底
+  let crossTab = null;       // 同源标签页变更通知
+  let fallbackActive = false;
+  const POLL_INTERVAL = 20000;
+  const CONFIG = window.HZS_CONFIG || {};
 
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -110,19 +82,144 @@
     return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
 
-  function load() {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const data = JSON.parse(raw);
-        if (Array.isArray(data.items)) return data.items.map(i => { delete i.price; return i; });
-      }
-    } catch (e) { /* 损坏则回退到示例数据 */ }
-    return SEED.map(x => ({ ...x }));
+  /* ═══════════════ 云端数据层 ═══════════════ */
+
+  function rowToItem(row) {
+    const item = (row.data && typeof row.data === 'object') ? { ...row.data } : {};
+    item.id = row.id;
+    item.type = row.type;
+    if (!item.createdAt) item.createdAt = row.created_at ? new Date(row.created_at).getTime() : Date.now();
+    if (!item.updatedAt) item.updatedAt = row.updated_at ? new Date(row.updated_at).getTime() : item.createdAt;
+    return item;
   }
 
-  function persist() {
-    localStorage.setItem(LS_KEY, JSON.stringify({ version: 1, items: state.items }));
+  const REST_BASE = () => `https://${CONFIG.ENV_ID}.api.tcloudbasegateway.com/v1/rdb/rest`;
+
+  async function restFetch(path, options = {}) {
+    const res = await fetch(REST_BASE() + path, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken || CONFIG.PUBLISHABLE_KEY}`,
+        ...(options.headers || {}),
+      },
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        msg = body.message || body.msg || body.error || msg;
+      } catch (e) { /* 无 JSON 错误体 */ }
+      const err = new Error(msg);
+      err.status = res.status;
+      throw err;
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  async function cloudFetchAll() {
+    const rows = await restFetch('/assets?select=*&order=created_at.asc');
+    return (rows || []).map(rowToItem);
+  }
+
+  function toRow(item) {
+    return {
+      id: item.id,
+      type: item.type,
+      data: item,
+      updated_at: new Date(item.updatedAt || Date.now()).toISOString(),
+    };
+  }
+
+  async function cloudUpsert(item) {
+    await restFetch('/assets', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates' },
+      body: JSON.stringify(toRow(item)),
+    });
+  }
+
+  async function cloudUpsertMany(items) {
+    if (!items.length) return;
+    await restFetch('/assets', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates' },
+      body: JSON.stringify(items.map(toRow)),
+    });
+  }
+
+  async function cloudDelete(id) {
+    await restFetch(`/assets?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  function cacheItems() {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(state.items)); } catch (e) { /* 忽略配额错误 */ }
+  }
+
+  function readCache() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(CACHE_KEY) || '[]');
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+
+  // 读取旧版本地台账（首次迁移用）
+  function readLegacyItems() {
+    try {
+      const raw = localStorage.getItem(LEGACY_LS_KEY);
+      if (!raw) return [];
+      const data = JSON.parse(raw);
+      const items = Array.isArray(data.items) ? data.items : [];
+      return items
+        .filter(i => i && (i.type === 'physical' || i.type === 'virtual') && (i.name || i.platform))
+        .map(i => {
+          delete i.price;
+          if (!i.id) i.id = uid();
+          if (!i.createdAt) i.createdAt = Date.now();
+          return i;
+        });
+    } catch (e) { return []; }
+  }
+
+  function friendlyErr(err) {
+    const msg = (err && (err.message || err.error_description || err.msg)) || String(err);
+    if (/[\u4e00-\u9fa5]/.test(msg)) return msg;  // 已是中文错误直接展示
+    const map = [
+      [/invalid (login )?credentials|incorrect.*password|username or password/i, '邮箱或密码错误'],
+      [/user not found|user does not exist/i, '账号不存在，请联系管理员创建'],
+      [/login.?type.*disabled|provider.*disabled|not.*enabled/i, '该登录方式未开启，请联系管理员在控制台开启'],
+      [/at least 6|minimum.*8|password.*length/i, '密码长度或强度不符合要求（8-32 位，含字母和数字）'],
+      [/rate limit|too many requests/i, '操作过于频繁，请稍后再试'],
+      [/permission denied|unauthorized|forbidden/i, '没有操作权限，请确认账号已被允许访问'],
+      [/failed to fetch|network|load failed|timeout/i, '无法连接云端服务器，请检查网络'],
+    ];
+    for (const [re, zh] of map) if (re.test(msg)) return zh;
+    return msg;
+  }
+
+  function setSync(status) {
+    state.sync = status;
+    const dot = $('#syncDot');
+    const text = $('#syncText');
+    if (!dot || !text) return;
+    // polling 复用 connecting 的琥珀色样式
+    dot.className = 'sync-dot ' + (status === 'polling' ? 'connecting' : status);
+    text.textContent = status === 'online' ? '实时同步已连接'
+                     : status === 'polling' ? '已连接云端 · 自动刷新中'
+                     : status === 'offline' ? '云端连接断开，重连中…'
+                     : '正在连接云端…';
+  }
+
+  let flashTimer;
+  function flashSync() {
+    const text = $('#syncText');
+    if (!text || (state.sync !== 'online' && state.sync !== 'polling')) return;
+    text.textContent = '刚刚收到云端更新';
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      text.textContent = state.sync === 'online' ? '实时同步已连接' : '已连接云端 · 自动刷新中';
+    }, 1600);
   }
 
   function nextCode() {
@@ -696,16 +793,25 @@
       owner: $('#f-owner').value.trim(),
     };
 
+    const now = Date.now();
+    let saved;
     if (editing) {
-      Object.assign(editing, record);
-      toast('已保存修改', 'ok');
+      Object.assign(editing, record, { updatedAt: now });
+      saved = editing;
     } else {
-      state.items.push({ id: uid(), createdAt: Date.now(), ...record });
-      toast('资产已登记入库', 'ok');
+      saved = { id: uid(), createdAt: now, updatedAt: now, ...record };
+      state.items.push(saved);
     }
-    persist();
+
     closeModal();
     renderAll();
+    cloudUpsert(saved)
+      .then(() => { cacheItems(); notifyOtherTabs(); toast(editing ? '已保存并同步到云端' : '资产已登记并同步到云端', 'ok'); })
+      .catch(async err => {
+        toast('云端保存失败：' + friendlyErr(err) + '，正在恢复数据…', 'err');
+        try { state.items = await cloudFetchAll(); } catch (e2) { /* 保留本地乐观态 */ }
+        renderAll();
+      });
   }
 
   function genPassword(len = 16) {
@@ -768,6 +874,37 @@
     document.removeEventListener('keydown', escClose);
   }
 
+  /* 通用确认弹窗（Promise 版，替代原生 confirm，避免冻结页面） */
+  function confirmChoice(opts) {
+    opts = opts || {};
+    const sub = opts.sub || 'CONFIRM';
+    const title = opts.title || '请确认';
+    const bodyHtml = opts.bodyHtml || '';
+    const okText = opts.okText || '确定';
+    const danger = !!opts.danger;
+    const root = $('#modalRoot');
+    root.innerHTML =
+      '<div class="overlay" data-overlay>' +
+        '<div class="modal confirm" role="alertdialog" aria-modal="true">' +
+          '<div class="modal-head"><div>' +
+            '<div class="modal-sub" style="color:var(--' + (danger ? 'red' : 'accent') + ')">' + esc(sub) + '</div>' +
+            '<div class="modal-title">' + esc(title) + '</div>' +
+          '</div></div>' +
+          '<div class="confirm-body">' + bodyHtml + '</div>' +
+          '<div class="modal-foot">' +
+            '<button class="btn btn-ghost" data-close>取消</button>' +
+            '<button class="btn ' + (danger ? 'btn-danger' : 'btn-primary') + '" id="confirmChoiceOk">' + esc(okText) + '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    document.addEventListener('keydown', escClose);
+    return new Promise(resolve => {
+      $('[data-overlay]', root).addEventListener('click', e => { if (e.target === e.currentTarget) { closeModal(); resolve(false); } });
+      $('[data-close]', root).forEach(b => b.addEventListener('click', () => { closeModal(); resolve(false); }));
+      $('#confirmChoiceOk').addEventListener('click', () => { closeModal(); resolve(true); });
+    });
+  }
+
   /* ═══════════════ Toast ═══════════════ */
 
   let toastTimer;
@@ -806,13 +943,31 @@
         if (!Array.isArray(items)) throw new Error('bad');
         const valid = items.filter(i => i && (i.type === 'physical' || i.type === 'virtual') && (i.name || i.platform));
         if (!valid.length) throw new Error('empty');
-        const proceed = window.confirm(`将导入 ${valid.length} 条资产并覆盖当前台账，此操作不可撤销。确定继续吗？`);
-        if (!proceed) return;
-        valid.forEach(i => { if (!i.id) i.id = uid(); if (!i.createdAt) i.createdAt = Date.now(); });
-        state.items = valid;
-        persist();
-        renderAll();
-        toast(`成功导入 ${valid.length} 条资产`, 'ok');
+        const now = Date.now();
+        valid.forEach(i => {
+          if (!i.id) i.id = uid();
+          if (!i.createdAt) i.createdAt = now;
+          i.updatedAt = now;
+        });
+        confirmChoice({
+          sub: 'IMPORT · 导入确认',
+          title: `导入 ${valid.length} 条资产？`,
+          bodyHtml: '<p>相同 ID 的资产会被更新，其他资产不受影响。</p>',
+          okText: '确认导入',
+        }).then(proceed => { if (!proceed) return; doImport(); });
+        return;
+        function doImport() {
+          toast('正在导入云端…');
+        cloudUpsertMany(valid)
+          .then(async () => {
+            state.items = await cloudFetchAll();
+            cacheItems();
+            renderAll();
+            notifyOtherTabs();
+            toast(`成功导入 ${valid.length} 条资产到云端`, 'ok');
+          })
+          .catch(err => toast('导入失败：' + friendlyErr(err), 'err'));
+        }
       } catch (e) {
         toast('导入失败：文件格式不正确', 'err');
       }
@@ -894,9 +1049,14 @@
       if (item && await confirmDelete(item)) {
         state.items = state.items.filter(i => i.id !== item.id);
         state.revealed.delete(item.id);
-        persist();
         renderAll();
-        toast('资产已删除', 'ok');
+        cloudDelete(item.id)
+          .then(() => { cacheItems(); notifyOtherTabs(); toast('资产已删除并同步', 'ok'); })
+          .catch(async err => {
+            toast('云端删除失败：' + friendlyErr(err), 'err');
+            try { state.items = await cloudFetchAll(); } catch (e2) { /* 保留本地态 */ }
+            renderAll();
+          });
       }
       return;
     }
@@ -909,7 +1069,311 @@
     if (opener) openForm(null, opener.dataset.open);
   });
 
-  /* ── 启动 ─────────────────────────────────────── */
-  persist();           // 首次访问写入示例数据；之后为幂等保存
-  renderAll();
+  /* ═══════════════ 登录与启动 ═══════════════ */
+
+  const gate = $('#authGate');
+
+  function showGate(pane) {
+    gate.hidden = false;
+    $$('.auth-pane', gate).forEach(p => { p.hidden = p.dataset.pane !== pane; });
+  }
+  function hideGate() { gate.hidden = true; }
+
+  function showAuthError(msg) {
+    const el = $('#authError');
+    el.textContent = msg;
+    el.hidden = false;
+  }
+  function clearAuthError() { $('#authError').hidden = true; }
+
+  function renderUser(user) {
+    if (!user) { $('#userBox').hidden = true; return; }
+    $('#userBox').hidden = false;
+    const meta = user.user_metadata || {};
+    const name = meta.name || meta.nickName || meta.username
+      || user.username || user.user_name
+      || (user.email && user.email.trim())
+      || (user.phone && user.phone.trim())
+      || user.name || '成员';
+    $('#userEmail').textContent = name;
+    $('#userAvatar').textContent = name.trim()[0] || '·';
+  }
+
+  async function handleAuthSubmit(e) {
+    e.preventDefault();
+    clearAuthError();
+    const account = $('#authEmail').value.trim();
+    const password = $('#authPassword').value;
+    if (!account || password.length < 8) {
+      showAuthError('请填写账号（用户名 / 邮箱 / 手机号），密码为 8-32 位且包含字母和数字');
+      return;
+    }
+    const btn = $('#authSubmit');
+    btn.disabled = true;
+    btn.textContent = '请稍候…';
+    try {
+      // CloudBase 用户名密码登录：账号可填用户名 / 邮箱 / 手机号，SDK 统一归一化
+      const { error } = await auth.signInWithPassword({ email: account, password });
+      if (error) throw error;
+      // 登录成功后 onAuthStateChange(SIGNED_IN) 会自动触发 bootstrap
+    } catch (err) {
+      showAuthError(friendlyErr(err));
+    } finally {
+      btn.disabled = false;
+      $('#authSubmit').textContent = '登录';
+    }
+  }
+
+  async function bootstrap(session) {
+    if (state.booting) return;
+    state.booting = true;
+    state.session = session;
+    setSync('connecting');
+    showGate('loading');
+
+    let items;
+    try {
+      items = await cloudFetchAll();
+    } catch (err) {
+      state.booting = false;
+      setSync('offline');
+      // 加载失败时允许用本地缓存只读查看，避免完全白屏
+      const cached = readCache();
+      if (cached.length) {
+        state.items = cached;
+        renderUser(session.user);
+        hideGate();
+        renderAll();
+        toast('云端连接失败，当前显示本机缓存（只读参考）：' + friendlyErr(err), 'err');
+      } else {
+        showGate('form');
+        showAuthError('无法加载云端数据：' + friendlyErr(err));
+      }
+      return;
+    }
+
+    // 首次进入：云端为空且本机存在旧版数据 → 询问是否迁移（空数据绝不上传）
+    if (!localStorage.getItem(MIGRATE_KEY)) {
+      localStorage.setItem(MIGRATE_KEY, '1');
+      if (items.length === 0) {
+        const legacy = readLegacyItems();
+        if (legacy.length) {
+          const upload = await confirmChoice({
+            sub: 'LEGACY · 发现本机旧数据',
+            title: '把本机资产上传到云端？',
+            bodyHtml:
+              '<p>云端资产库目前是空的，检测到本机浏览器里还有 <span class="target">' + legacy.length + ' 条</span> 资产数据（可能是之前的示例/本地数据）。</p>' +
+              '<p>上传后所有成员立即可见；取消则放弃本机数据，从空白资产库开始。</p>',
+            okText: '上传到云端',
+          });
+          if (upload) {
+            try {
+              await cloudUpsertMany(legacy);
+              items = await cloudFetchAll();
+              toast(`已将 ${legacy.length} 条本机资产迁移到云端`, 'ok');
+            } catch (err) {
+              toast('本机数据迁移失败：' + friendlyErr(err) + '（可稍后用“导入”功能手动迁移）', 'err');
+            }
+          }
+        }
+      }
+    }
+
+    state.items = items;
+    cacheItems();
+    state.ready = true;
+    state.booting = false;
+    renderUser(session.user);
+    hideGate();
+    renderAll();
+    subscribeRealtime();
+    startCrossTabSync();
+  }
+
+  /* ── 云端变更同步：Realtime 优先，失败自动降级为定时刷新 ── */
+
+  function signatureOf(items) {
+    return items.map(i => i.id + ':' + (i.updatedAt || 0)).sort().join('|');
+  }
+
+  let refreshing = false;
+  async function refreshFromCloud(flash = true) {
+    if (refreshing || !state.ready) return;
+    // 编辑/确认弹窗打开时不刷新，避免打断正在编辑的对象
+    if ($('#modalRoot') && $('#modalRoot').querySelector('.modal')) return;
+    refreshing = true;
+    try {
+      const items = await cloudFetchAll();
+      if (signatureOf(items) !== signatureOf(state.items)) {
+        state.items = items;
+        cacheItems();
+        renderAll();
+        if (flash) flashSync();
+      }
+    } catch (e) {
+      // 单次轮询失败不打扰用户，等下一轮
+      if (state.sync === 'online') setSync('offline');
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  function startFallbackPolling() {
+    if (fallbackActive) return;
+    fallbackActive = true;
+    setSync('polling');
+    pollTimer = setInterval(() => refreshFromCloud(), POLL_INTERVAL);
+    document.addEventListener('visibilitychange', onVisibilityRefresh);
+    window.addEventListener('focus', onFocusRefresh);
+  }
+
+  function stopFallbackPolling() {
+    fallbackActive = false;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    document.removeEventListener('visibilitychange', onVisibilityRefresh);
+    window.removeEventListener('focus', onFocusRefresh);
+  }
+
+  function onVisibilityRefresh() {
+    if (fallbackActive && document.visibilityState === 'visible') refreshFromCloud();
+  }
+  function onFocusRefresh() {
+    if (fallbackActive) refreshFromCloud();
+  }
+
+  // 同一浏览器内多个标签页：任一页写入后立即互相同步
+  function startCrossTabSync() {
+    if (crossTab || typeof BroadcastChannel !== 'function') return;
+    crossTab = new BroadcastChannel('hzs-assets-sync');
+    crossTab.onmessage = ev => {
+      if (ev.data && ev.data.type === 'assets-changed') refreshFromCloud();
+    };
+  }
+
+  function notifyOtherTabs() {
+    try {
+      if (crossTab) crossTab.postMessage({ type: 'assets-changed', at: Date.now() });
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function subscribeRealtime() {
+    if (liveChannel) return;
+    let errorCount = 0;
+    let subscribed = false;
+    const ch = app.realtime().channel('assets-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'assets' }, payload => {
+        const type = String(payload.eventType || payload.type || '').toUpperCase();
+        if (type === 'DELETE') {
+          const id = (payload.oldRecord || payload.old || {}).id;
+          if (id) {
+            state.items = state.items.filter(i => i.id !== id);
+            state.revealed.delete(id);
+          }
+        } else {
+          const row = payload.newRecord || payload.new;
+          if (row) {
+            const item = rowToItem(row);
+            const idx = state.items.findIndex(i => i.id === item.id);
+            if (idx === -1) state.items.push(item);
+            else state.items[idx] = item;
+          }
+        }
+        cacheItems();
+        flashSync();
+        renderAll();
+      })
+      .subscribe((status, err) => {
+        if (status === 'SUBSCRIBED') {
+          subscribed = true;
+          errorCount = 0;
+          if (fallbackActive) stopFallbackPolling();
+          setSync('online');
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          // SDK 内部会持续重连；实时通道暂不可用时立即降级为定时刷新保证多端同步，
+          // 一旦后续重连成功（SUBSCRIBED）会自动停掉轮询并升级为实时状态
+          errorCount += 1;
+          startFallbackPolling();
+        } else if (!fallbackActive) {
+          setSync('connecting');
+        }
+      });
+    liveChannel = ch;
+
+    // 实时通道在部分环境下长时间无回调（传输层反复失败），
+    // 8 秒内未订阅成功就先启用定时刷新兜底，待 SUBSCRIBED 后自动升级为实时
+    setTimeout(() => {
+      if (!subscribed && liveChannel === ch) startFallbackPolling();
+    }, 8000);
+  }
+
+  async function handleSignOut() {
+    stopFallbackPolling();
+    if (crossTab) {
+      try { crossTab.close(); } catch (e) { /* 忽略 */ }
+      crossTab = null;
+    }
+    if (liveChannel) {
+      try {
+        await liveChannel.unsubscribe();
+        await app.realtime().removeChannel(liveChannel);
+      } catch (e) { /* 忽略 */ }
+      liveChannel = null;
+    }
+    accessToken = null;
+    state.ready = false;
+    state.session = null;
+    state.items = [];
+    state.revealed.clear();
+    localStorage.removeItem(CACHE_KEY);
+    renderUser(null);
+    renderAll();
+    showGate('form');
+  }
+
+  function bindAuthUI() {
+    $('#authForm').addEventListener('submit', handleAuthSubmit);
+    $('#logoutBtn').addEventListener('click', () => auth.signOut());
+  }
+
+  function init() {
+    const cfgOk = CONFIG.ENV_ID && CONFIG.PUBLISHABLE_KEY
+      && window.cloudbase && typeof window.cloudbase.init === 'function';
+    if (!cfgOk) { showGate('config'); return; }
+
+    try {
+      app = window.cloudbase.init({
+        env: CONFIG.ENV_ID,
+        region: CONFIG.REGION || 'ap-shanghai',
+        accessKey: CONFIG.PUBLISHABLE_KEY,
+      });
+      // v3 中 app.auth 为对象；兼容个别版本以函数形式获取
+      auth = (typeof app.auth === 'function' && !app.auth.signInWithPassword)
+        ? app.auth({ persistence: 'local' })
+        : app.auth;
+    } catch (e) {
+      showGate('config');
+      return;
+    }
+    if (!auth || typeof auth.signInWithPassword !== 'function') { showGate('config'); return; }
+
+    renderAll();
+    setSync('connecting');
+    showGate('loading');
+    bindAuthUI();
+
+    auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        handleSignOut();
+      } else if (event === 'INITIAL_SESSION') {
+        accessToken = session ? (session.access_token || null) : null;
+        if (session) bootstrap(session);
+        else showGate('form');
+      } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        accessToken = session ? (session.access_token || accessToken) : accessToken;
+        if (session && event === 'SIGNED_IN' && !state.ready && !state.booting) bootstrap(session);
+      }
+    });
+  }
+
+  init();
 })();

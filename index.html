@@ -44,19 +44,34 @@
     </nav>
 
     <div class="side-foot">
-      <p class="foot-note">数据仅保存在本机浏览器中，不会上传服务器。</p>
+      <div class="sync-line" id="syncLine" title="云端实时连接状态">
+        <span class="sync-dot connecting" id="syncDot"></span>
+        <span id="syncText">正在连接云端…</span>
+      </div>
+      <p class="foot-note">数据存储在云端数据库，成员改动实时同步。</p>
       <div class="foot-actions">
         <button class="btn btn-ghost btn-sm" id="exportBtn" title="导出 JSON 备份">
           <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 3v11m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           导出备份
         </button>
-        <button class="btn btn-ghost btn-sm" id="importBtn" title="从 JSON 导入">
+        <button class="btn btn-ghost btn-sm" id="importBtn" title="从 JSON 导入到云端">
           <svg viewBox="0 0 24 24" width="14" height="14"><path d="M12 15V4m0 0L8 8m4-4l4 4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
           导入
         </button>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
       </div>
-      <div class="foot-ver">HZS LEDGER · v1.0</div>
+      <div class="user-box" id="userBox" hidden>
+        <div class="user-id">
+          <div class="user-avatar" id="userAvatar">·</div>
+          <div class="user-meta">
+            <div class="user-email" id="userEmail">—</div>
+            <div class="user-role">工作室成员</div>
+          </div>
+        </div>
+        <button class="btn-mini" id="logoutBtn" title="退出登录">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path d="M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 8l-4 4 4 4M6 12h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
     </div>
   </aside>
 
@@ -84,10 +99,57 @@
   </main>
 </div>
 
+<!-- ░░░ 登录 / 启动遮罩 ░░░ -->
+<div id="authGate" class="auth-gate" hidden>
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="brand-mark" aria-hidden="true">H</div>
+      <div>
+        <div class="brand-name">HZS</div>
+        <div class="brand-sub">ASSET LEDGER · 云端版</div>
+      </div>
+    </div>
+
+    <!-- 登录中 -->
+    <div class="auth-pane" data-pane="loading">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="auth-tip">正在连接云端资产库…</p>
+    </div>
+
+    <!-- 未登录 -->
+    <form class="auth-pane" data-pane="form" id="authForm" autocomplete="on">
+      <h2 class="auth-title" id="authTitle">工作室成员登录</h2>
+      <p class="auth-desc" id="authDesc">登录后可查看与编辑全部资产数据</p>
+
+      <label class="auth-field">
+        <span>账号</span>
+        <input type="text" id="authEmail" placeholder="用户名 / 邮箱 / 手机号" autocomplete="username" required>
+      </label>
+      <label class="auth-field">
+        <span>密码</span>
+        <input type="password" id="authPassword" placeholder="8-32 位，含字母和数字" autocomplete="current-password" minlength="8" required>
+      </label>
+
+      <div class="auth-error" id="authError" hidden></div>
+
+      <button type="submit" class="btn btn-primary auth-submit" id="authSubmit">登录</button>
+      <p class="auth-note">成员账号由管理员在云开发控制台「身份认证 → 用户管理」中创建</p>
+    </form>
+
+    <!-- 配置缺失 -->
+    <div class="auth-pane" data-pane="config">
+      <h2 class="auth-title">云端尚未配置</h2>
+      <p class="auth-desc">请在 <code>js/config.js</code> 中填写腾讯云开发环境 ID（ENV_ID）与 Publishable Key 后刷新页面。</p>
+    </div>
+  </div>
+</div>
+
 <!-- 弹窗 / 确认框 挂载点 -->
 <div id="modalRoot"></div>
 <div id="toastRoot" class="toast-root" aria-live="polite"></div>
 
+<script src="js/config.js" defer></script>
+<script src="js/vendor/cloudbase.full.js" defer></script>
 <script src="js/app.js" defer></script>
 </body>
 </html>
