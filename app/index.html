@@ -114,6 +114,7 @@
     <div class="auth-pane" data-pane="loading">
       <div class="spinner" aria-hidden="true"></div>
       <p class="auth-tip">正在连接云端资产库…</p>
+      <p class="auth-note" id="loadingHint" hidden>首次加载需下载约 1MB 登录组件，弱网下可能稍慢。<br>若长时间无响应，<a href="#" id="loadingStalled" style="color:var(--accent)">点此手动重试</a>。</p>
     </div>
 
     <!-- 未登录 -->
@@ -141,6 +142,15 @@
       <h2 class="auth-title">云端尚未配置</h2>
       <p class="auth-desc">请在 <code>js/config.js</code> 中填写腾讯云开发环境 ID（ENV_ID）与 Publishable Key 后刷新页面。</p>
     </div>
+
+    <!-- 启动超时（网络/SDK 无响应时的可操作兜底，由 app.js 看门狗显示） -->
+    <div class="auth-pane" data-pane="stalled">
+      <h2 class="auth-title">加载时间过长</h2>
+      <p class="auth-desc">云端登录组件或网络长时间无响应。可重试加载；若反复出现，请检查当前网络（可切换网络/关闭代理后再试）。</p>
+      <div class="auth-error" id="stalledReason" hidden style="margin-bottom:12px"></div>
+      <button type="button" class="btn btn-primary auth-submit" id="stalledRetry">重新加载</button>
+      <button type="button" class="btn btn-ghost auth-submit" id="stalledForm" style="margin-top:10px">返回账号登录</button>
+    </div>
   </div>
 </div>
 
@@ -148,8 +158,34 @@
 <div id="modalRoot"></div>
 <div id="toastRoot" class="toast-root" aria-live="polite"></div>
 
-<script src="js/config.js" defer></script>
-<script src="js/vendor/cloudbase.full.js" defer></script>
-<script src="js/app.js" defer></script>
+<script>
+/* 云端 SDK 约 969KB，弱网偶发下载截断（ERR_CONTENT_LENGTH_MISMATCH）。
+   脚本加载失败时自动带防缓存参数重试，最多 2 次；仍失败则显示可操作提示。 */
+(function () {
+  var KEY = 'hzs-script-retry';
+  var n = 0;
+  try { n = parseInt(sessionStorage.getItem(KEY) || '0', 10) || 0; } catch (e) {}
+  window.__hzsScriptFail = function (which) {
+    if (n < 2) {
+      try { sessionStorage.setItem(KEY, String(n + 1)); } catch (e) {}
+      var url = location.pathname + '?sr=' + (n + 1) + '#' + Date.now();
+      location.replace(url);
+    } else {
+      var g = document.getElementById('authGate');
+      if (g) {
+        g.hidden = false;
+        var panes = g.querySelectorAll('.auth-pane');
+        for (var i = 0; i < panes.length; i++) panes[i].hidden = panes[i].dataset.pane !== 'stalled';
+        var r = document.getElementById('stalledReason');
+        if (r) { r.hidden = false; r.textContent = '登录组件文件下载不完整（' + which + '），请切换网络或关闭代理/VPN 后重试。'; }
+      }
+    }
+  };
+  window.__hzsScriptOk = function () { try { sessionStorage.removeItem(KEY); } catch (e) {} };
+})();
+</script>
+<script src="js/config.js" defer onerror="window.__hzsScriptFail&&window.__hzsScriptFail('config.js')"></script>
+<script src="js/vendor/cloudbase.full.js?v=3101" defer onerror="window.__hzsScriptFail&&window.__hzsScriptFail('cloudbase.full.js')"></script>
+<script src="js/app.js?v=20260929b" defer onerror="window.__hzsScriptFail&&window.__hzsScriptFail('app.js')"></script>
 </body>
 </html>

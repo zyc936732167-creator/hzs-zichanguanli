@@ -96,11 +96,14 @@
   const REST_BASE = () => `https://${CONFIG.ENV_ID}.api.tcloudbasegateway.com/v1/rdb/rest`;
   const FETCH_TIMEOUT_MS = 15000;   // 单次 REST 请求超时，防止网络挂起时界面无限等待
 
-  // 向 SDK 取一次当前会话（必要时会自动刷新令牌）
+  // 向 SDK 取一次当前会话（必要时会自动刷新令牌），10 秒超时防止 SDK 挂起拖死启动
   async function refreshAccessToken() {
     try {
       if (auth && typeof auth.getSession === 'function') {
-        const res = await auth.getSession();
+        const res = await Promise.race([
+          auth.getSession(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('getSession-timeout')), 10000)),
+        ]);
         const ses = res && res.data && res.data.session;
         if (ses && ses.access_token) {
           accessToken = ses.access_token;
@@ -1121,11 +1124,48 @@
 
   const gate = $('#authGate');
 
+  /* ── 全局启动看门狗：无论卡在 SDK 初始化、会话获取还是数据拉取，
+     加载遮罩都不允许永久停留，25 秒后给出可操作的恢复面板 ── */
+  let stallTimer = null;
+  let hintTimer = null;
+  const STALL_MS = 25000;
+
+  function showStalled(reason) {
+    state.booting = false;
+    setSync('offline');
+    const r = $('#stalledReason');
+    if (r) {
+      if (reason) { r.textContent = reason; r.hidden = false; }
+      else r.hidden = true;
+    }
+    showGate('stalled');
+  }
+
+  function armStallWatchdog(reason) {
+    clearStallWatchdog();
+    stallTimer = setTimeout(() => {
+      // 只在“转圈加载页”仍停留时介入；登录表单/离线提示等可操作页面不打断
+      const visible = $('.auth-pane:not([hidden])', gate);
+      if (state.ready || !visible || visible.dataset.pane !== 'loading') return;
+      showStalled(reason);
+    }, STALL_MS);
+    // 8 秒后在转圈页显示手动重试入口（不打断自动流程）
+    hintTimer = setTimeout(() => {
+      const h = $('#loadingHint');
+      if (h && !state.ready && !gate.hidden) h.hidden = false;
+    }, 8000);
+  }
+
+  function clearStallWatchdog() {
+    if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+    if (hintTimer) { clearTimeout(hintTimer); hintTimer = null; }
+  }
+
   function showGate(pane) {
     gate.hidden = false;
     $$('.auth-pane', gate).forEach(p => { p.hidden = p.dataset.pane !== pane; });
   }
-  function hideGate() { gate.hidden = true; }
+  function hideGate() { clearStallWatchdog(); gate.hidden = true; }
 
   function showAuthError(msg) {
     const el = $('#authError');
@@ -1192,9 +1232,7 @@
     state.session = session;
     setSync('connecting');
     showGate('loading');
-
-    // 启动前先确保令牌可用（长期未打开的标签令牌可能已过期）
-    await refreshAccessToken();
+    armStallWatchdog('登录态恢复后，云端数据长时间无响应。可能是网络不稳定或登录已失效，请重试或返回重新登录。');
 
     let settled = false;
     let watchdog = null;
@@ -1218,6 +1256,7 @@
       if (settled) return;
       settled = true;
       clearTimeout(watchdog);
+      clearStallWatchdog();
       state.booting = false;
       setSync('offline');
       // 加载失败时允许用本地缓存只读查看，避免完全白屏
@@ -1243,6 +1282,9 @@
         settleOffline(err);
       }
     }, 20000);
+
+    // 启动前先确保令牌可用（长期未打开的标签令牌可能已过期）；已在看门狗保护之下
+    await refreshAccessToken();
 
     let items;
     try {
@@ -1426,9 +1468,25 @@
   function bindAuthUI() {
     $('#authForm').addEventListener('submit', handleAuthSubmit);
     $('#logoutBtn').addEventListener('click', () => auth.signOut());
+
+    // 启动卡顿恢复面板 / 转圈页手动重试
+    $('#stalledRetry').addEventListener('click', () => {
+      try { sessionStorage.removeItem('hzs-script-retry'); } catch (e) {}
+      location.replace(location.pathname + '?retry=' + Date.now());
+    });
+    $('#stalledForm').addEventListener('click', () => {
+      clearStallWatchdog();
+      state.booting = false;
+      showGate('form');
+    });
+    $('#loadingStalled').addEventListener('click', e => {
+      e.preventDefault();
+      showStalled('手动中断：云端启动时间过长，可重试或返回重新登录。');
+    });
   }
 
   function init() {
+    if (typeof window.__hzsScriptOk === 'function') window.__hzsScriptOk();
     const cfgOk = CONFIG.ENV_ID && CONFIG.PUBLISHABLE_KEY
       && window.cloudbase && typeof window.cloudbase.init === 'function';
     if (!cfgOk) { showGate('config'); return; }
@@ -1453,6 +1511,8 @@
     setSync('connecting');
     showGate('loading');
     bindAuthUI();
+    // SDK 初始化本身也可能因网络问题长时间不回调 → 全局看门狗覆盖这段
+    armStallWatchdog('云端登录组件长时间无响应。请检查网络（可尝试切换网络或关闭代理/VPN）后重试。');
 
     auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
@@ -1462,7 +1522,7 @@
         // 已完成启动后忽略 SDK 可能重复抛出的初始事件，避免闪回加载页
         if (state.ready) return;
         if (session) bootstrap(session);
-        else showGate('form');
+        else { clearStallWatchdog(); showGate('form'); }
       } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
         accessToken = session ? (session.access_token || accessToken) : accessToken;
         if (session && event === 'SIGNED_IN' && !state.ready && !state.booting) bootstrap(session);
